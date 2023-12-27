@@ -353,6 +353,42 @@ class TestPytorchModules(absltest.TestCase):
 
             np.testing.assert_allclose(jax_y, pt_y2.numpy(), atol=2e-1, err_msg='jax and pytorch dont match mha output')
 
+    def test_encoder1d(self):
+        # Test that MHA layer behaves the same between jax and PyTorch
+        # Load saved inputs.
+        # Note, these outputs are completely off, probably because MHA module is not exactly accurate
+
+        intermediates = jnp.load('octo_intermediates.npz', allow_pickle=True)['arr_0'].item()
+        x, = intermediates['octo_transformer']['BlockTransformer_0']['Transformer_0']['input']
+        attention_mask, = intermediates['octo_transformer']['BlockTransformer_0']['Transformer_0']['attention_mask'] # [batch, heads, query len, key/value len], (1, 1, 273, 273)
+
+        params = self.model.params['octo_transformer']['BlockTransformer_0']['Transformer_0']['encoderblock_0']
+        
+        num_heads = 12
+        jax_encoder = transformer.Encoder1DBlock(
+            mlp_dim=3072,
+            num_heads=num_heads,
+            dropout_rate=0.,
+            attention_dropout_rate=0.,
+        )
+
+        # https://flax.readthedocs.io/en/latest/_modules/flax/linen/attention.html#MultiHeadDotProductAttention.__call__
+        jax_y, mod_vars = jax_encoder.apply(
+            {'params': params}, inputs=x, attention_mask=attention_mask, deterministic=True, mutable='intermediates')
+        pt_encoder = pt_transformer.Encoder1DBlock(
+            input_channels=768,
+            mlp_dim=3072,
+            num_heads=num_heads,
+            dropout_rate=0.
+        )
+        state_dict = pt_transformer.Encoder1DBlock.flax_params_to_state_dict(params)
+        pt_encoder.load_state_dict(state_dict)
+        with torch.no_grad():
+            pt_x = torch.from_numpy(np.array(x))
+            pt_attention_mask = torch.logical_not(torch.from_numpy(np.array(attention_mask)))[0, 0].T # (L, S)
+            pt_y = pt_encoder(pt_x, attention_mask=pt_attention_mask)    
+            np.testing.assert_allclose(jax_y, pt_y.numpy(), atol=1e-3, err_msg='jax and pytorch dont match encoder1d output')
+
 
     def test_transformer(self):
         # this test is not passing yet! 
