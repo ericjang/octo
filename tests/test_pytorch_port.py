@@ -132,7 +132,8 @@ class TestPytorchModules(absltest.TestCase):
         
         # fwd pass of jax encoder
         jax_image_token_group, jax_features = tokenizer.apply(
-            {'params': params}, observations=observation, tasks=task)
+            {'params': params}, observations=observation, tasks=task, mutable='intermediates')
+        jax_features = jax_features['intermediates']['SmallStem16_0']
         jax_image_tokens = jax_image_token_group.tokens # (1, 1, 256, 512)
 
         pt_tokenizer = pt_tokenizers.ImageTokenizer()
@@ -152,13 +153,8 @@ class TestPytorchModules(absltest.TestCase):
         diffs = OrderedDict()
         for layer in layer_names:
             pt_bhwc = pt_features[layer].permute(0, 2, 3, 1).numpy()
-            diffs[layer] = np.abs(jax_features[layer] - pt_bhwc)
+            diffs[layer] = np.abs(jax_features['_' + layer] - pt_bhwc)
             logging.debug(f'{layer} abs diff mean: {diffs[layer].mean()} std: {diffs[layer].std()} min: {diffs[layer].min()} max: {diffs[layer].max()}')
-        
-        # plt.boxplot([d.flatten() for d in diffs.values()], labels=layer_names)
-        # # plt.bar(layer_names, [np.mean(diffs[layer]) for layer in layer_names])
-        # plt.show()
-
         np.testing.assert_allclose(pt_img_tokens, jax_image_tokens, atol=1e-3)
 
     def test_stdconv(self):
