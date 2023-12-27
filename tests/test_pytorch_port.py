@@ -5,14 +5,11 @@ import sys
 os.environ['TOKENIZERS_PARALLELISM'] = 'false'
 from PIL import Image
 import requests
-import matplotlib.pyplot as plt
 import numpy as np
 from pathlib import Path
 from absl.testing import absltest
-from functools import partial
 from collections import OrderedDict
 # Jax ecosystem
-import orbax.checkpoint
 import jax
 import flax
 import tensorflow as tf
@@ -28,7 +25,6 @@ from octo.model.pt_components import vit_encoders as pt_vit_encoders
 from octo.model.pt_components import tokenizers as pt_tokenizers
 from octo.model.pt_components import transformer as pt_transformer
 import torch.nn.functional as F
-
 import torch.nn as nn
 
 # Plotting 
@@ -96,31 +92,6 @@ class TestPytorchModules(absltest.TestCase):
             pt_y_bhwc = pt_y.permute(0, 2, 3, 1).numpy()
         return jax_y, pt_y_bhwc
 
-    def test_restore(self):
-        # infer params shape without actually doing any computation
-        
-        # restore params and count them
-        checkpoint_path = '/home/eric/.cache/huggingface/hub/models--rail-berkeley--octo-small/snapshots/03d88976c54a58e10480d2043a8c762b35bc2611/'
-        checkpointer = orbax.checkpoint.CheckpointManager(
-            checkpoint_path, orbax.checkpoint.PyTreeCheckpointer()
-        )
-        step = checkpointer.latest_step()
-        
-        with tf.io.gfile.GFile(
-            tf.io.gfile.join(checkpoint_path, "example_batch.msgpack"), "rb"
-        ) as f:
-            example_batch = flax.serialization.msgpack_restore(f.read())
-
-        params_shape = jax.eval_shape(
-            partial(self.model.module.init, train=False),
-            jax.random.PRNGKey(0),
-            example_batch["observation"],
-            example_batch["task"],
-            example_batch["observation"]["pad_mask"],
-        )["params"]
-        
-        params = checkpointer.restore(step, params_shape)
-
     def test_pt_image_tokenizer(self):
         img = self._get_img()
         img = img[np.newaxis,np.newaxis,...] # (B, T, H, W, C)
@@ -154,10 +125,6 @@ class TestPytorchModules(absltest.TestCase):
             pt_bhwc = pt_features[layer].permute(0, 2, 3, 1).numpy()
             diffs[layer] = np.abs(jax_features[layer] - pt_bhwc)
             logging.debug(f'{layer} abs diff mean: {diffs[layer].mean()} std: {diffs[layer].std()} min: {diffs[layer].min()} max: {diffs[layer].max()}')
-        
-        # plt.boxplot([d.flatten() for d in diffs.values()], labels=layer_names)
-        # # plt.bar(layer_names, [np.mean(diffs[layer]) for layer in layer_names])
-        # plt.show()
 
         np.testing.assert_allclose(pt_img_tokens, jax_image_tokens, atol=1e-3)
 
@@ -274,22 +241,13 @@ class TestPytorchModules(absltest.TestCase):
         params = self.model.params['octo_transformer']['BlockTransformer_0']['Transformer_0']['encoderblock_0']['MultiHeadDotProductAttention_0']
         
         num_heads = 12
+        breakpoint()
         jax_mha = jax_nn.MultiHeadDotProductAttention(
             broadcast_dropout=False,
             dropout_rate=0.,
             num_heads=num_heads,
         )
 
-        # Random init
-        # params = jax_mha.init(jax.random.PRNGKey(0), x)['params']
-        # params = jax.tree_util.tree_map(lambda x: np.array(x), params)
-        
-        # this test passes when kernel is set to 0.
-        # implying that in_proj_weight is not being set properly
-        # for k in ['out']:
-        #     # params[k]['bias'] = np.zeros_like(params[k]['bias'])
-        #     params[k]['kernel'] = np.ones_like(params[k]['kernel'])
-        
         # https://flax.readthedocs.io/en/latest/_modules/flax/linen/attention.html#MultiHeadDotProductAttention.__call__
         jax_y, mod_vars = jax_mha.apply(
             {'params': params}, inputs_q=x, inputs_k=x, inputs_v=x, mask=attention_mask, sow_weights=True, mutable='intermediates')
@@ -307,13 +265,12 @@ class TestPytorchModules(absltest.TestCase):
             pt_x = torch.from_numpy(np.array(x))
             # important gotcha: in PyTorch, True = masked out (NOT allowed to attend)
             pt_attention_mask = torch.logical_not(torch.from_numpy(np.array(attention_mask)))[0, 0].T # (L, S)
-            # pt_attention_mask = torch.logical_not(torch.tril(torch.ones_like(pt_attention_mask)))
             pt_y, attn_output_weights = pt_mha(pt_x, pt_x, pt_x, attn_mask=pt_attention_mask, need_weights=False)
         
             # (seq, batch, features)
             pt_x = pt_x.permute(1, 0, 2)
-            # breakpoint()
             # pt_q, k, v are each of size torch.Size([273, 1, 768])
+            breakpoint()
             pt_y2, attn_output_weights2, (pt_q, pt_q_scaled, pt_k, pt_v) = F.multi_head_attention_forward(
                         query=pt_x,
                         key=pt_x,
@@ -330,6 +287,7 @@ class TestPytorchModules(absltest.TestCase):
                         add_zero_attn=False,
                         dropout_p=0.0,
                         average_attn_weights=False)
+            breakpoint()
             # pt_q is torch.Size([12, 273, 64])
             pt_q_scaled = pt_q_scaled.permute(1, 0, 2)[None].numpy() # (1, 273, 12, 64)
             np.testing.assert_allclose(pt_q_scaled, jax_q, atol=1e-4, err_msg='q_proj(x) not close')
